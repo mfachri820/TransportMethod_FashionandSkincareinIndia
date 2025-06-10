@@ -1,12 +1,9 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 st.set_page_config(
-    page_title="Transport Method Solver with Stepping Stone",
+    page_title="Transport Method Solver",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -24,12 +21,6 @@ class TransportMethodSolver:
         
     def load_data(self):
         try:
-            files_to_check = [
-                'data/matriks_biaya_final.csv',
-                'data/vektor_pasokan_final.csv', 
-                'data/vektor_permintaan_final.csv'
-            ]
-            
             cost_df = pd.read_csv('data/matriks_biaya_final.csv', index_col=0)
             self.cost_matrix = cost_df.values.astype(float)
             
@@ -243,15 +234,12 @@ class TransportMethodSolver:
             return ((pos1[0] == pos2[0] and pos3[0] == pos4[0] and pos1[1] == pos4[1] and pos2[1] == pos3[1]) or
                    (pos1[1] == pos2[1] and pos3[1] == pos4[1] and pos1[0] == pos4[0] and pos2[0] == pos3[0]))
 
-        # Try to find a simple rectangular loop
         for i, pos1 in enumerate(basic_vars):
             for j, pos2 in enumerate(basic_vars[i+1:], i+1):
                 for k, pos3 in enumerate(basic_vars[j+1:], j+1):
-                    # Check if we can form a rectangle with start_pos
                     if can_form_rectangle(start_pos, pos1, pos2, pos3):
                         return [start_pos, pos1, pos2, pos3]
         
-        # Fallback: return a simple loop if rectangle not found
         if len(basic_vars) >= 3:
             return [start_pos] + basic_vars[:3]
         return None
@@ -260,20 +248,17 @@ class TransportMethodSolver:
         """Calculate opportunity cost for non-basic variable (i,j)"""
         basic_vars = self.get_basic_variables(allocation)
         
-        # Find a loop including position (i,j)
         loop = self.find_loop(basic_vars, (i, j))
         
         if not loop:
-            return 0  # Can't form loop, assume no improvement
+            return 0  
         
-        # Calculate opportunity cost along the loop
-        opportunity_cost = self.cost_matrix[i, j]
-        
-        # Alternate signs: -, +, -, +, ...
+        opportunity_cost = self.cost_matrix[i, j]    
+
         for idx, (r, c) in enumerate(loop[1:], 1):
-            if idx % 2 == 1:  # Odd positions: subtract
+            if idx % 2 == 1:  
                 opportunity_cost -= self.cost_matrix[r, c]
-            else:  # Even positions: add
+            else:  
                 opportunity_cost += self.cost_matrix[r, c]
         
         return opportunity_cost
@@ -288,277 +273,121 @@ class TransportMethodSolver:
             m, n = allocation.shape
             basic_vars = self.get_basic_variables(allocation)
             
-            # Calculate opportunity costs for all non-basic variables
-            opportunity_costs = np.zeros((m, n))
+            min_opportunity_cost = 0
+            entering_var = None
+            
+            for i in range(m):
+                for j in range(n):
+                    if allocation[i, j] == 0: 
+                        opp_cost = self.calculate_opportunity_cost(allocation, i, j)
+                        
+                        if opp_cost < min_opportunity_cost:
+                            min_opportunity_cost = opp_cost
+                            entering_var = (i, j)
+            
+            if min_opportunity_cost >= 0:
+                break
+            
+            if entering_var:
+                basic_vars = self.get_basic_variables(allocation)
+                loop = self.find_loop(basic_vars, entering_var)
+                
+                if loop and len(loop) >= 4:
+                    min_allocation = float('inf')
+                    for idx, (r, c) in enumerate(loop[1:], 1):
+                        if idx % 2 == 1:
+                            min_allocation = min(min_allocation, allocation[r, c])
+                    
+                    if min_allocation > 0 and min_allocation != float('inf'):
+                        allocation[entering_var[0], entering_var[1]] += min_allocation
+                        
+                        for idx, (r, c) in enumerate(loop[1:], 1):
+                            if idx % 2 == 1:  
+                                allocation[r, c] -= min_allocation
+                            else:  
+                                allocation[r, c] += min_allocation
+                        
+                        current_cost = np.sum(allocation * self.cost_matrix)
+                    else:
+                        break
+                else:
+                    break
+            else:
+                break
+        
+        self.allocation = allocation
+        self.total_cost = current_cost
+        return allocation, current_cost
+
+    def modi_optimization(self, initial_allocation, max_iterations=10):
+        """Optimize allocation using MODI (Modified Distribution) method"""
+        allocation = initial_allocation.copy()
+        current_cost = np.sum(allocation * self.cost_matrix)
+        
+        for iteration in range(max_iterations):
+            m, n = allocation.shape
+            basic_vars = self.get_basic_variables(allocation)
+            
+            ui = [None] * m
+            vj = [None] * n
+            ui[0] = 0  
+            
+            changed = True
+            while changed:
+                changed = False
+                for i, j in basic_vars:
+                    if ui[i] is not None and vj[j] is None:
+                        vj[j] = self.cost_matrix[i, j] - ui[i]
+                        changed = True
+                    elif vj[j] is not None and ui[i] is None:
+                        ui[i] = self.cost_matrix[i, j] - vj[j]
+                        changed = True
+            
             min_opportunity_cost = 0
             entering_var = None
             
             for i in range(m):
                 for j in range(n):
                     if allocation[i, j] == 0:  # Non-basic variable
-                        opp_cost = self.calculate_opportunity_cost(allocation, i, j)
-                        opportunity_costs[i, j] = opp_cost
-                        
-                        if opp_cost < min_opportunity_cost:
-                            min_opportunity_cost = opp_cost
-                            entering_var = (i, j)
+                        if ui[i] is not None and vj[j] is not None:
+                            opp_cost = self.cost_matrix[i, j] - ui[i] - vj[j]
+                            if opp_cost < min_opportunity_cost:
+                                min_opportunity_cost = opp_cost
+                                entering_var = (i, j)
             
-            # Store iteration details
-            iteration_info = {
-                'iteration': iteration + 1,
-                'current_cost': current_cost,
-                'opportunity_costs': opportunity_costs.copy(),
-                'min_opportunity_cost': min_opportunity_cost,
-                'entering_variable': entering_var,
-                'allocation': allocation.copy()
-            }
-            
-            # If all opportunity costs are non-negative, optimal solution found
             if min_opportunity_cost >= 0:
-                iteration_info['status'] = 'Optimal'
-                iteration_info['improvement'] = 0
-                self.stepping_stone_iterations.append(iteration_info)
                 break
             
-            # Find loop for entering variable and perform allocation shift
             if entering_var:
-                basic_vars = self.get_basic_variables(allocation)
                 loop = self.find_loop(basic_vars, entering_var)
-                
                 if loop and len(loop) >= 4:
-                    # Find minimum allocation in positions to be decreased
                     min_allocation = float('inf')
                     for idx, (r, c) in enumerate(loop[1:], 1):
-                        if idx % 2 == 1:  # Positions to decrease
+                        if idx % 2 == 1: 
                             min_allocation = min(min_allocation, allocation[r, c])
                     
                     if min_allocation > 0 and min_allocation != float('inf'):
-                        # Shift allocations along the loop
                         allocation[entering_var[0], entering_var[1]] += min_allocation
-                        
                         for idx, (r, c) in enumerate(loop[1:], 1):
-                            if idx % 2 == 1:  # Decrease
+                            if idx % 2 == 1:
                                 allocation[r, c] -= min_allocation
-                            else:  # Increase
+                            else:
                                 allocation[r, c] += min_allocation
                         
-                        new_cost = np.sum(allocation * self.cost_matrix)
-                        improvement = current_cost - new_cost
-                        
-                        iteration_info['status'] = 'Improved'
-                        iteration_info['improvement'] = improvement
-                        iteration_info['new_cost'] = new_cost
-                        iteration_info['loop'] = loop
-                        iteration_info['shift_amount'] = min_allocation
-                        
-                        current_cost = new_cost
+                        current_cost = np.sum(allocation * self.cost_matrix)
                     else:
-                        iteration_info['status'] = 'No improvement possible'
-                        iteration_info['improvement'] = 0
-                        self.stepping_stone_iterations.append(iteration_info)
                         break
                 else:
-                    iteration_info['status'] = 'Loop not found'
-                    iteration_info['improvement'] = 0
-                    self.stepping_stone_iterations.append(iteration_info)
                     break
             else:
-                iteration_info['status'] = 'No entering variable'
-                iteration_info['improvement'] = 0
-                self.stepping_stone_iterations.append(iteration_info)
                 break
-            
-            self.stepping_stone_iterations.append(iteration_info)
         
         self.allocation = allocation
         self.total_cost = current_cost
         return allocation, current_cost
 
-def create_allocation_heatmap(allocation, suppliers, destinations, title):
-    try:
-        fig = go.Figure(data=go.Heatmap(
-            z=allocation,
-            x=destinations,
-            y=suppliers,
-            colorscale='RdYlBu_r',
-            text=allocation.astype(int),
-            texttemplate="%{text}",
-            textfont={"size": 10, "color": "black"},
-            hoverongaps=False,
-            showscale=True,
-            colorbar=dict(
-                title="Allocation Units",
-                title_side="right"
-            )
-        ))
-        
-        fig.update_layout(
-            title={
-                'text': title,
-                'x': 0.5,
-                'xanchor': 'center',
-                'font': {'size': 14, 'color': 'darkblue'}
-            },
-            xaxis_title="Destinations",
-            yaxis_title="Suppliers",
-            height=400,
-            font=dict(size=10),
-            plot_bgcolor='white'
-        )
-        
-        return fig
-    except Exception as e:
-        st.error(f"Error creating heatmap: {e}")
-        fig = go.Figure()
-        fig.add_annotation(
-            text=f"Chart Error: {str(e)}",
-            xref="paper", yref="paper",
-            x=0.5, y=0.5, xanchor='center', yanchor='middle',
-            showarrow=False,
-            font=dict(size=16, color="red")
-        )
-        return fig
-
-def create_opportunity_cost_heatmap(opportunity_costs, suppliers, destinations, title):
-    """Create heatmap for opportunity costs"""
-    try:
-        fig = go.Figure(data=go.Heatmap(
-            z=opportunity_costs,
-            x=destinations,
-            y=suppliers,
-            colorscale='RdYlGn_r',
-            text=np.round(opportunity_costs, 2),
-            texttemplate="%{text}",
-            textfont={"size": 10, "color": "white"},
-            hoverongaps=False,
-            showscale=True,
-            colorbar=dict(
-                title="Opportunity Cost",
-                title_side="right"
-            )
-        ))
-        
-        fig.update_layout(
-            title={
-                'text': title,
-                'x': 0.5,
-                'xanchor': 'center',
-                'font': {'size': 14, 'color': 'darkblue'}
-            },
-            xaxis_title="Destinations",
-            yaxis_title="Suppliers",
-            height=400,
-            font=dict(size=10),
-            plot_bgcolor='white'
-        )
-        
-        return fig
-    except Exception as e:
-        st.error(f"Error creating opportunity cost heatmap: {e}")
-        return go.Figure()
-
-def create_stepping_stone_convergence_chart(iterations):
-    """Create chart showing cost improvement through iterations"""
-    try:
-        iteration_nums = [iter_info['iteration'] for iter_info in iterations]
-        costs = [iter_info['current_cost'] for iter_info in iterations]
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=iteration_nums,
-            y=costs,
-            mode='lines+markers',
-            name='Transportation Cost',
-            line=dict(width=3),
-            marker=dict(size=8)
-        ))
-        
-        fig.update_layout(
-            title={
-                'text': "Stepping Stone Method - Cost Convergence",
-                'x': 0.5,
-                'xanchor': 'center',
-                'font': {'size': 16, 'color': 'darkblue'}
-            },
-            xaxis_title="Iteration",
-            yaxis_title="Total Cost",
-            height=400,
-            font=dict(size=12),
-            plot_bgcolor='white',
-            showlegend=True
-        )
-        
-        return fig
-    except Exception as e:
-        st.error(f"Error creating convergence chart: {e}")
-        return go.Figure()
-
-def create_cost_comparison_chart(results):
-    try:
-        methods = list(results.keys())
-        costs = [results[method]['total_cost'] for method in methods]
-        
-        colors = ['#2E86AB', '#A23B72', '#F18F01', '#8E44AD']
-        
-        fig = go.Figure(data=[
-            go.Bar(
-                x=methods, 
-                y=costs, 
-                text=[f"₹{cost:,.0f}" for cost in costs],
-                textposition='auto',
-                marker_color=colors[:len(methods)],
-                textfont=dict(size=12, color='white')
-            )
-        ])
-        
-        fig.update_layout(
-            title={
-                'text': "Total Transportation Cost Comparison",
-                'x': 0.5,
-                'xanchor': 'center',
-                'font': {'size': 16, 'color': 'darkblue'}
-            },
-            xaxis_title="Transportation Methods",
-            yaxis_title="Total Cost",
-            height=400,
-            font=dict(size=12),
-            plot_bgcolor='white',
-            showlegend=False
-        )
-        
-        return fig
-    except Exception as e:
-        st.error(f"Error creating comparison chart: {e}")
-        return go.Figure()
-
-def create_allocation_summary_chart(allocation, suppliers, destinations, costs):
-    try:
-        fig = make_subplots(
-            rows=1, cols=2,
-            subplot_titles=('Supply Utilization', 'Demand Fulfillment'),
-            specs=[[{"type": "bar"}, {"type": "bar"}]]
-        )
-        
-        supply_used = np.sum(allocation, axis=1)
-        fig.add_trace(
-            go.Bar(x=suppliers, y=supply_used, name="Supply Used", marker_color='lightblue'),
-            row=1, col=1
-        )
-        
-        demand_met = np.sum(allocation, axis=0)
-        fig.add_trace(
-            go.Bar(x=destinations, y=demand_met, name="Demand Met", marker_color='lightcoral'),
-            row=1, col=2
-        )
-        
-        fig.update_layout(height=400, showlegend=False)
-        return fig
-    except Exception as e:
-        st.error(f"Error creating summary chart: {e}")
-        return go.Figure()
-
 def main():
-    st.title("Transportation Method Solver with Stepping Stone Optimization")
+    st.title("Transportation Method Solver")
     solver = TransportMethodSolver()
     
     if not solver.load_data():
@@ -615,32 +444,22 @@ def main():
         "Vogel's Approximation Method": "vam"
     }
     
-    method_descriptions = {
-        "Northwest Corner Method": "Simple method starting from top-left corner",
-        "Least Cost Method": "Greedy approach selecting minimum cost cells first",
-        "Vogel's Approximation Method": "Advanced method using penalty calculations"
-    }
-    
     selected_methods = st.multiselect(
         "Choose initial methods:",
         options=list(method_options.keys()),
         default=list(method_options.keys()),
-        help="Select one or more initial methods to solve and then optimize with Stepping Stone"
+        help="Select one or more initial methods to solve"
     )
     
-    apply_stepping_stone = st.checkbox(
-        "Apply Stepping Stone Optimization", 
-        value=True,
-        help="Apply Stepping Stone method to optimize the initial solutions"
+    optimization_method = st.selectbox(
+        "Choose optimization method:",
+        options=["None", "Stepping Stone", "MODI", "Both"],
+        index=1,
+        help="Select optimization method to apply"
     )
     
-    if selected_methods:
-        st.write("**Selected Methods:**")
-        for method in selected_methods:
-            st.write(f"• **{method}**: {method_descriptions[method]}")
-        
-        if apply_stepping_stone:
-            st.info("🔄 Stepping Stone optimization will be applied to improve the initial solutions")
+    apply_stepping_stone = optimization_method in ["Stepping Stone", "Both"]
+    apply_modi = optimization_method in ["MODI", "Both"]
     
     if st.button("Solve Transportation Problem", type="primary", use_container_width=True):
         if not selected_methods:
@@ -653,13 +472,15 @@ def main():
         status_text = st.empty()
         
         try:
-            total_methods = len(selected_methods) * (2 if apply_stepping_stone else 1)
+            multiplier = 1
+            if apply_stepping_stone: multiplier += 1
+            if apply_modi: multiplier += 1
+            total_methods = len(selected_methods) * multiplier
             current_step = 0
             
             for method_name in selected_methods:
                 method_code = method_options[method_name]
                 
-                # Solve initial method
                 status_text.text(f"Solving using {method_name}...")
                 progress_bar.progress(current_step / total_methods)
                 
@@ -683,7 +504,6 @@ def main():
                     
                     current_step += 1
                     
-                    # Apply Stepping Stone if selected
                     if apply_stepping_stone:
                         status_text.text(f"Optimizing {method_name} with Stepping Stone...")
                         progress_bar.progress(current_step / total_methods)
@@ -694,11 +514,28 @@ def main():
                         results[optimized_method_name] = {
                             'allocation': optimized_allocation,
                             'total_cost': optimized_cost,
-                            'steps': steps,  # Keep original steps
+                            'steps': steps,
                             'method_type': 'optimized',
                             'initial_cost': initial_cost,
-                            'improvement': initial_cost - optimized_cost,
-                            'stepping_stone_iterations': solver.stepping_stone_iterations.copy()
+                            'improvement': initial_cost - optimized_cost
+                        }
+                        
+                        current_step += 1
+                    
+                    if apply_modi:
+                        status_text.text(f"Optimizing {method_name} with MODI...")
+                        progress_bar.progress(current_step / total_methods)
+                        
+                        modi_allocation, modi_cost = solver.modi_optimization(initial_allocation)
+                        
+                        modi_method_name = f"{method_name} + MODI"
+                        results[modi_method_name] = {
+                            'allocation': modi_allocation,
+                            'total_cost': modi_cost,
+                            'steps': steps,
+                            'method_type': 'optimized',
+                            'initial_cost': initial_cost,
+                            'improvement': initial_cost - modi_cost
                         }
                         
                         current_step += 1
@@ -721,7 +558,6 @@ def main():
             st.error("No methods completed successfully. Please check your data.")
             st.stop()
         
-        # Display results for each method
         for method_name in results.keys():
             st.subheader(f"{method_name} Results")
             
@@ -731,7 +567,6 @@ def main():
                 total_cost = result['total_cost']
                 steps = result['steps']
                 
-                # Metrics row
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total Cost", f"{total_cost:,.2f}")
@@ -743,175 +578,34 @@ def main():
                 with col4:
                     if result['method_type'] == 'optimized':
                         improvement = result['improvement']
-                        st.metric("Cost Improvement", f"{improvement:,.2f}", delta=f"-{improvement:,.2f}")
+                        st.metric("Cost Improvement", f"{improvement:,.2f}")
                 
-                # Create tabs based on method type
-                if result['method_type'] == 'optimized':
-                    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-                        "Allocation Matrix", "Visualization", "Solution Steps", 
-                        "Stepping Stone Details", "Optimization Progress"
-                    ])
-                else:
-                    tab1, tab2, tab3 = st.tabs(["Allocation Matrix", "Visualization", "Solution Steps"])
+                st.subheader("Allocation Matrix")
+                allocation_df = pd.DataFrame(
+                    allocation.astype(int), 
+                    index=solver.suppliers, 
+                    columns=solver.destinations
+                )
+                st.dataframe(allocation_df, use_container_width=True)
                 
-                with tab1:
-                    try:
-                        allocation_df = pd.DataFrame(
-                            allocation.astype(int), 
-                            index=solver.suppliers, 
-                            columns=solver.destinations
-                        )
-                        st.dataframe(allocation_df, use_container_width=True)
-                    except Exception as e:
-                        st.error(f"Error displaying allocation matrix: {e}")
-                
-                with tab2:
-                    fig_heatmap = create_allocation_heatmap(
-                        allocation, 
-                        solver.suppliers, 
-                        solver.destinations,
-                        f"{method_name} - Allocation Heatmap"
-                    )
-                    st.plotly_chart(fig_heatmap, use_container_width=True, key=f"heatmap_{method_name}")
-                    
-                    fig_summary = create_allocation_summary_chart(
-                        allocation, solver.suppliers, solver.destinations, solver.cost_matrix
-                    )
-                    st.plotly_chart(fig_summary, use_container_width=True, key=f"summary_{method_name}")
-                
-                with tab3:
-                    try:
-                        steps_df = pd.DataFrame(steps)
-                        st.dataframe(steps_df, use_container_width=True, hide_index=True)
-                    except Exception as e:
-                        st.error(f"Error displaying solution steps: {e}")
-                
-                # Additional tabs for optimized methods
-                if result['method_type'] == 'optimized':
-                    with tab4:
-                        st.subheader("Stepping Stone Iteration Details")
-                        
-                        if 'stepping_stone_iterations' in result:
-                            iterations = result['stepping_stone_iterations']
-                            
-                            if iterations:
-                                # Summary of iterations
-                                col1, col2, col3 = st.columns(3)
-                                with col1:
-                                    st.metric("Total Iterations", len(iterations))
-                                with col2:
-                                    initial_cost = result['initial_cost']
-                                    final_cost = iterations[-1]['current_cost']
-                                    total_improvement = initial_cost - final_cost
-                                    st.metric("Total Improvement", f"{total_improvement:,.2f}")
-                                with col3:
-                                    final_status = iterations[-1]['status']
-                                    st.metric("Final Status", final_status)
-                                
-                                # Iteration details
-                                st.subheader("Iteration by Iteration Analysis")
-                                
-                                for i, iteration in enumerate(iterations):
-                                    with st.expander(f"Iteration {iteration['iteration']} - {iteration['status']}"):
-                                        col1, col2 = st.columns(2)
-                                        
-                                        with col1:
-                                            st.write(f"**Current Cost:** {iteration['current_cost']:,.2f}")
-                                            st.write(f"**Min Opportunity Cost:** {iteration['min_opportunity_cost']:.2f}")
-                                            if 'improvement' in iteration:
-                                                st.write(f"**Improvement:** {iteration['improvement']:,.2f}")
-                                            
-                                            if iteration['entering_variable']:
-                                                supplier_idx, dest_idx = iteration['entering_variable']
-                                                supplier_name = solver.suppliers[supplier_idx]
-                                                dest_name = solver.destinations[dest_idx]
-                                                st.write(f"**Entering Variable:** {supplier_name} → {dest_name}")
-                                        
-                                        with col2:
-                                            # Show opportunity costs heatmap for this iteration
-                                            if 'opportunity_costs' in iteration:
-                                                fig_opp = create_opportunity_cost_heatmap(
-                                                    iteration['opportunity_costs'],
-                                                    solver.suppliers,
-                                                    solver.destinations,
-                                                    f"Opportunity Costs - Iteration {iteration['iteration']}"
-                                                )
-                                                st.plotly_chart(fig_opp, use_container_width=True, key=f"opp_cost_{method_name}_{i}")
-                                        
-                                        # Show allocation for this iteration
-                                        if 'allocation' in iteration:
-                                            st.write("**Allocation Matrix:**")
-                                            iter_allocation_df = pd.DataFrame(
-                                                iteration['allocation'].astype(int),
-                                                index=solver.suppliers,
-                                                columns=solver.destinations
-                                            )
-                                            st.dataframe(iter_allocation_df, use_container_width=True)
-                            else:
-                                st.info("No stepping stone iterations recorded.")
-                        else:
-                            st.info("Stepping stone details not available.")
-                    
-                    with tab5:
-                        st.subheader("Optimization Progress")
-                        
-                        if 'stepping_stone_iterations' in result and result['stepping_stone_iterations']:
-                            # Cost convergence chart
-                            fig_convergence = create_stepping_stone_convergence_chart(result['stepping_stone_iterations'])
-                            st.plotly_chart(fig_convergence, use_container_width=True, key=f"convergence_{method_name}")
-                            
-                            # Improvement summary table
-                            st.subheader("Iteration Summary")
-                            iteration_summary = []
-                            for iteration in result['stepping_stone_iterations']:
-                                iteration_summary.append({
-                                    'Iteration': iteration['iteration'],
-                                    'Cost': f"{iteration['current_cost']:,.2f}",
-                                    'Min Opportunity Cost': f"{iteration['min_opportunity_cost']:.2f}",
-                                    'Improvement': f"{iteration.get('improvement', 0):,.2f}",
-                                    'Status': iteration['status']
-                                })
-                            
-                            summary_df = pd.DataFrame(iteration_summary)
-                            st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                        else:
-                            st.info("No optimization progress data available.")
+                st.subheader("Solution Steps")
+                steps_df = pd.DataFrame(steps)
+                st.dataframe(steps_df, use_container_width=True, hide_index=True)
                 
             except Exception as e:
                 st.error(f"Error displaying results for {method_name}: {e}")
             
             st.markdown("---")
         
-        # Methods comparison section
         if len(results) > 1:
             st.header("Methods Comparison")
             
             try:
-                fig_comparison = create_cost_comparison_chart(results)
-                st.plotly_chart(fig_comparison, use_container_width=True, key="cost_comparison")
-                
-                # Find best and worst methods
                 best_method = min(results.keys(), key=lambda x: results[x]['total_cost'])
                 best_cost = results[best_method]['total_cost']
-                worst_method = max(results.keys(), key=lambda x: results[x]['total_cost'])
-                worst_cost = results[worst_method]['total_cost']
                 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.success(f"**Best Method**: {best_method}")
-                    st.write(f"Cost: {best_cost:,.2f}")
-                with col2:
-                    if len(results) > 2:
-                        savings = worst_cost - best_cost
-                        savings_pct = (savings / worst_cost) * 100 if worst_cost > 0 else 0
-                        st.info(f"**Maximum Savings**: {savings:,.2f}")
-                        st.write(f"({savings_pct:.1f}% improvement)")
-                with col3:
-                    st.error(f"**Highest Cost**: {worst_method}")
-                    st.write(f"Cost: {worst_cost:,.2f}")
+                st.success(f"**Best Method**: {best_method} with cost: {best_cost:,.2f}")
                 
-                # Detailed comparison table
-                st.subheader("Detailed Comparison")
                 comparison_data = []
                 for method, result in results.items():
                     comparison_data.append({
@@ -921,59 +615,11 @@ def main():
                         'Solution Steps': len(result['steps']),
                         'Active Routes': np.count_nonzero(result['allocation']),
                         'Cost vs Best': f"{result['total_cost'] - best_cost:,.2f}",
-                        'Improvement from Initial': f"{result.get('improvement', 0):,.2f}" if result['method_type'] == 'optimized' else "N/A",
-                        'Status': 'Optimal' if method == best_method else ('Suboptimal' if method == worst_method else 'Good')
+                        'Improvement from Initial': f"{result.get('improvement', 0):,.2f}" if result['method_type'] == 'optimized' else "N/A"
                     })
                 
                 comparison_df = pd.DataFrame(comparison_data)
                 st.dataframe(comparison_df, use_container_width=True, hide_index=True)
-                
-                # Stepping Stone effectiveness analysis
-                st.subheader("Stepping Stone Optimization Effectiveness")
-                
-                initial_methods = [k for k, v in results.items() if v['method_type'] == 'initial']
-                optimized_methods = [k for k, v in results.items() if v['method_type'] == 'optimized']
-                
-                if initial_methods and optimized_methods:
-                    effectiveness_data = []
-                    
-                    for initial_method in initial_methods:
-                        optimized_method = f"{initial_method} + Stepping Stone"
-                        if optimized_method in results:
-                            initial_cost = results[initial_method]['total_cost']
-                            optimized_cost = results[optimized_method]['total_cost']
-                            improvement = initial_cost - optimized_cost
-                            improvement_pct = (improvement / initial_cost) * 100 if initial_cost > 0 else 0
-                            
-                            effectiveness_data.append({
-                                'Initial Method': initial_method,
-                                'Initial Cost': f"{initial_cost:,.2f}",
-                                'Optimized Cost': f"{optimized_cost:,.2f}",
-                                'Absolute Improvement': f"{improvement:,.2f}",
-                                'Percentage Improvement': f"{improvement_pct:.2f}%",
-                                'Optimization Status': 'Improved' if improvement > 0 else ('No Change' if improvement == 0 else 'Degraded')
-                            })
-                    
-                    if effectiveness_data:
-                        effectiveness_df = pd.DataFrame(effectiveness_data)
-                        st.dataframe(effectiveness_df, use_container_width=True, hide_index=True)
-                        
-                        # Summary statistics
-                        total_methods_optimized = len(effectiveness_data)
-                        methods_improved = sum(1 for row in effectiveness_data if 'Improved' in row['Optimization Status'])
-                        avg_improvement = np.mean([
-                            float(row['Absolute Improvement'].replace(',', '')) 
-                            for row in effectiveness_data
-                        ])
-                        
-                        st.write("**Stepping Stone Summary:**")
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Methods Optimized", total_methods_optimized)
-                        with col2:
-                            st.metric("Methods Improved", f"{methods_improved}/{total_methods_optimized}")
-                        with col3:
-                            st.metric("Average Improvement", f"{avg_improvement:,.2f}")
                 
             except Exception as e:
                 st.error(f"Error in comparison section: {e}")
