@@ -45,43 +45,7 @@ class TransportMethodSolver:
         except Exception as e:
             st.error(f"Error loading data: {e}")
             return False
-    
-    def northwest_corner_method(self):
-        m, n = len(self.supply), len(self.demand)
-        supply_copy = self.supply.copy()
-        demand_copy = self.demand.copy()
-        allocation = np.zeros((m, n))
         
-        steps = []
-        i, j = 0, 0
-        
-        while i < m and j < n:
-            allocated = min(supply_copy[i], demand_copy[j])
-            allocation[i, j] = allocated
-            
-            steps.append({
-                'Step': len(steps) + 1,
-                'Supplier': self.suppliers[i],
-                'Destination': self.destinations[j],
-                'Allocation': allocated,
-                'Unit Cost': self.cost_matrix[i, j],
-                'Cost': allocated * self.cost_matrix[i, j],
-                'Remaining Supply': supply_copy[i] - allocated,
-                'Remaining Demand': demand_copy[j] - allocated
-            })
-            
-            supply_copy[i] -= allocated
-            demand_copy[j] -= allocated
-            
-            if supply_copy[i] == 0:
-                i += 1
-            if demand_copy[j] == 0:
-                j += 1
-        
-        self.allocation = allocation
-        self.total_cost = np.sum(allocation * self.cost_matrix)
-        return steps
-    
     def least_cost_method(self):
         m, n = len(self.supply), len(self.demand)
         supply_copy = self.supply.copy()
@@ -130,94 +94,6 @@ class TransportMethodSolver:
         self.total_cost = np.sum(allocation * self.cost_matrix)
         return steps
     
-    def vogels_approximation_method(self):
-        m, n = len(self.supply), len(self.demand)
-        supply_copy = self.supply.copy()
-        demand_copy = self.demand.copy()
-        allocation = np.zeros((m, n))
-        
-        steps = []
-        cost_matrix_copy = self.cost_matrix.copy()
-        
-        while np.sum(supply_copy) > 0 and np.sum(demand_copy) > 0:  
-            row_penalties = []
-            col_penalties = []
-            
-            for i in range(m):
-                if supply_copy[i] > 0:
-                    row_costs = [cost_matrix_copy[i, j] for j in range(n) if demand_copy[j] > 0]
-                    if len(row_costs) >= 2:
-                        row_costs.sort()
-                        penalty = row_costs[1] - row_costs[0]
-                    else:
-                        penalty = 0
-                else:
-                    penalty = -1
-                row_penalties.append(penalty)
-            
-            for j in range(n):
-                if demand_copy[j] > 0:
-                    col_costs = [cost_matrix_copy[i, j] for i in range(m) if supply_copy[i] > 0]
-                    if len(col_costs) >= 2:
-                        col_costs.sort()
-                        penalty = col_costs[1] - col_costs[0]
-                    else:
-                        penalty = 0
-                else:
-                    penalty = -1
-                col_penalties.append(penalty)
-            
-            max_row_penalty = max([p for p in row_penalties if p >= 0]) if any(p >= 0 for p in row_penalties) else -1
-            max_col_penalty = max([p for p in col_penalties if p >= 0]) if any(p >= 0 for p in col_penalties) else -1
-            
-            if max_row_penalty >= max_col_penalty:
-                selected_row = row_penalties.index(max_row_penalty)
-                min_cost = float('inf')
-                selected_col = -1
-                for j in range(n):
-                    if demand_copy[j] > 0 and cost_matrix_copy[selected_row, j] < min_cost:
-                        min_cost = cost_matrix_copy[selected_row, j]
-                        selected_col = j
-            else:
-                selected_col = col_penalties.index(max_col_penalty)
-                min_cost = float('inf')
-                selected_row = -1
-                for i in range(m):
-                    if supply_copy[i] > 0 and cost_matrix_copy[i, selected_col] < min_cost:
-                        min_cost = cost_matrix_copy[i, selected_col]
-                        selected_row = i
-            
-            if selected_row == -1 or selected_col == -1:
-                break
-            
-            allocated = min(supply_copy[selected_row], demand_copy[selected_col])
-            allocation[selected_row, selected_col] = allocated
-            
-            steps.append({
-                'Step': len(steps) + 1,
-                'Supplier': self.suppliers[selected_row],
-                'Destination': self.destinations[selected_col],
-                'Unit Cost': min_cost,
-                'Allocation': allocated,
-                'Cost': allocated * min_cost,
-                'Row Penalty': max_row_penalty,
-                'Col Penalty': max_col_penalty,
-                'Remaining Supply': supply_copy[selected_row] - allocated,
-                'Remaining Demand': demand_copy[selected_col] - allocated
-            })
-            
-            supply_copy[selected_row] -= allocated
-            demand_copy[selected_col] -= allocated
-            
-            if supply_copy[selected_row] == 0:
-                cost_matrix_copy[selected_row, :] = float('inf')
-            if demand_copy[selected_col] == 0:
-                cost_matrix_copy[:, selected_col] = float('inf')
-        
-        self.allocation = allocation
-        self.total_cost = np.sum(allocation * self.cost_matrix)
-        return steps
-
     def get_basic_variables(self, allocation):
         """Get positions of basic variables (non-zero allocations)"""
         basic_vars = []
@@ -439,9 +315,7 @@ def main():
     st.header("Select Transportation Method")
     
     method_options = {
-        "Northwest Corner Method": "ncm",
-        "Least Cost Method": "lcm", 
-        "Vogel's Approximation Method": "vam"
+        "Least Cost Method": "lcm"
     }
     
     selected_methods = st.multiselect(
@@ -485,12 +359,8 @@ def main():
                 progress_bar.progress(current_step / total_methods)
                 
                 try:
-                    if method_code == "ncm":
-                        steps = solver.northwest_corner_method()
-                    elif method_code == "lcm":
+                    if method_code == "lcm":
                         steps = solver.least_cost_method()
-                    elif method_code == "vam":
-                        steps = solver.vogels_approximation_method()
                     
                     initial_allocation = solver.allocation.copy()
                     initial_cost = solver.total_cost
